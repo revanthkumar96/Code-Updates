@@ -1,0 +1,119 @@
+# Smart Seva: Advanced Fraud Detection Features
+
+This document details the newly implemented **AI-Driven Fraud Detection Modules**. These modules leverage Large Language Models (LLMs) to perform complex reasoning about geography and linguistics, detecting deep fakes that rule-based systems miss.
+
+---
+
+## 1. Geospatial Analysis (LLM-Based)
+**Module**: [geospatial_analysis.py](file:///c:/Users/sudik/OneDrive/Desktop/Mindcres/ai-space/smart_seva/server/src/services/modules/fraud_detection/geospatial_analysis.py)
+
+### How It Works
+The system validates the relationship between the **Applicant's Address** and the **Issuing Authority** using two key logic checks:
+1.  **Administrative Hierarchy**: Verifies if the issuing office (e.g., *Mandal Office*) belongs to the same District/State as the applicant.
+2.  **Distance Plausibility**: Checks if it is physically plausible for the applicant to visit that office. (e.g., A resident of *District A* shouldn't get a cert from *District B* unless it's a state-level body).
+
+### Real-World Examples
+
+#### Scenario A: Verified Match (Low Risk)
+**File**: [income.jpeg](file:///c:/Users/sudik/OneDrive/Desktop/Mindcres/ai-space/smart_seva/server/src/test_data/income.jpeg) (Real Image Test Result)
+*   **Applicant**: District Y.S.R., Andhra Pradesh
+*   **Issuer**: State Department, Andhra Pradesh
+*   **LLM Reasoning**: "Applicant is in Andhra Pradesh. Issuing authority is a state department... Distance plausibility is High (~150-200km is reasonable for a state capital visit)."
+
+**Output:**
+```json
+"geospatial_analysis": {
+  "score": 0,
+  "status": "verified",
+  "details": {
+    "llm_analysis": {
+      "is_consistent": true,
+      "match_level": "State",
+      "distance_plausibility": "High",
+      "risk_score": 10.0
+    }
+  }
+}
+```
+
+#### Scenario B: Jurisdiction Mismatch (High Risk)
+**File**: [birth_te.jpeg](file:///c:/Users/sudik/OneDrive/Desktop/Mindcres/ai-space/smart_seva/server/src/test_data/birth_te.jpeg) (Real Image Test Result)
+*   **Applicant**: "SRI VASAVI APEX HOSPITAL" (No District/State provided)
+*   **Issuer**: "Municipal Corporation Kurnool"
+*   **LLM Reasoning**: "Since the hospital's jurisdiction is unknown, we cannot assert it belongs to Kurnool district... Distance plausibility is Low."
+
+**Output:**
+```json
+"geospatial_analysis": {
+  "score": 85.0,
+  "status": "mismatch",
+  "details": {
+    "llm_analysis": {
+      "is_consistent": false,
+      "match_level": "Mismatch",
+      "distance_plausibility": "Low",
+      "risk_score": 85.0
+    },
+    "flags": ["Jurisdiction Mismatch (Mismatch): ...The absence of locality information means the hierarchy cannot be matched..."]
+  }
+}
+```
+
+---
+
+## 2. Text Consistency Validator (NLP)
+**Module**: [text_consistency_analysis.py](file:///c:/Users/sudik/OneDrive/Desktop/Mindcres/ai-space/smart_seva/server/src/services/modules/fraud_detection/text_consistency_analysis.py)
+
+### How It Works
+This module analyzes the extracted text for linguistic "tells" of forgery. It specifically distinguishes between **OCR Noise** (harmless) and **Content/Grammar Errors** (suspicious).
+
+**Key Checks:**
+1.  **Grammar & Spelling**: Flags non-standard errors (e.g., "Designatlon", "tahsilda").
+2.  **Formatting**: Checks for inconsistent capitalization or spacing (e.g., "Village_LEBAKA").
+3.  **Tone**: Ensures the document uses formal, official language.
+
+### Real-World Example
+
+#### Scenario: Suspicious / Poor Consistency
+**File**: [income.jpeg](file:///c:/Users/sudik/OneDrive/Desktop/Mindcres/ai-space/smart_seva/server/src/test_data/income.jpeg) (Real Image Test Result)
+*   **Issues Found**:
+    *   **Grammar/Spelling**: "Designatlon" (Designation), "tahsilda" (Tahsildar).
+    *   **Formatting**: "Village_LEBAKA" (Underscore used), "Rs. Z5ooo.oo" (Bad number formatting), "Date: 25/09/202" (Incomplete year).
+    *   **Placeholder Data**: "xxx-xxxx-7085" (Detected in other modules, but contextually relevant here).
+
+**Output:**
+```json
+"text_consistency_analysis": {
+  "score": 35.0,  // Low Score = High Risk
+  "status": "success",
+  "details": {
+    "tone": "Formal/Official",
+    "grammar_issues": "None detected that cannot be explained by OCR errors.",
+    "formatting_issues": [
+      "[Format] 1. 'GovernmcootnabPradesh' – incorrect spacing...",
+      "[Format] 10. 'Designatlon' – misspelled.",
+      "[Format] 11. 'tahsilda' – missing 'r'."
+    ],
+    "analysis": "Most irregularities stem from OCR errors, but the presence of genuine misspellings and inconsistent formatting indicates that the template may have been altered or poorly produced."
+  }
+}
+```
+
+---
+
+## 3. Integration Logic
+**File**: [fraud_detection_node.py](file:///c:/Users/sudik/OneDrive/Desktop/Mindcres/ai-space/smart_seva/server/src/services/nodes/fraud_detection_node.py)
+
+The system calculates an `overall_score` by taking the maximum risk from all enabled modules.
+
+```python
+consistency_risk = 100 - text_consistency_score  # Invert consistency (35 score -> 65 risk)
+
+overall_score = max(
+    pattern_risk,       # e.g., 75 (income.jpeg)
+    statistical_risk,   # e.g., 0
+    geospatial_risk,    # e.g., 0 (income.jpeg)
+    consistency_risk    # e.g., 65
+)
+# Result: 75 -> MANUAL_REVIEW
+```
